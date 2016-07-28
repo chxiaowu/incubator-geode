@@ -564,6 +564,11 @@ public abstract class AbstractRegionMap implements RegionMap {
             continue;
           }
           RegionEntry newRe = getEntryFactory().createEntry((RegionEntryContext) _getOwnerObject(), key, value);
+          // TODO: passing value to createEntry causes a problem with the disk stats.
+          //   The disk stats have already been set to track oldRe.
+          //   So when we call createEntry we probably want to give it REMOVED_PHASE1
+          //   and then set the value in copyRecoveredEntry it a way that does not
+          //   change the disk stats. This also depends on DiskEntry.Helper.initialize not changing the stats for REMOVED_PHASE1
           copyRecoveredEntry(oldRe, newRe);
           // newRe is now in this._getMap().
           if (newRe.isTombstone()) {
@@ -1593,6 +1598,8 @@ public abstract class AbstractRegionMap implements RegionMap {
         // generate versions and Tombstones for destroys
         boolean dispatchListenerEvent = inTokenMode;
         boolean opCompleted = false;
+        // TODO: passing DESTROYED to createEntry is ok as long as DiskEntry.Helper.initialize does not change the stats; keep in mind that newRe may not make it into the map
+        // TODO: if inTokenMode then Token.DESTROYED is ok but what about !inTokenMode because owner.concurrencyChecksEnabled? In that case we do not want a DESTROYED token.
         RegionEntry newRe = getEntryFactory().createEntry(owner, key,
             Token.DESTROYED);
         if ( oqlIndexManager != null) {
@@ -1998,6 +2005,7 @@ public abstract class AbstractRegionMap implements RegionMap {
             if (!ownerIsInitialized) {
               // when GII message arrived or processed later than invalidate
               // message, the entry should be created as placeholder
+              // TODO: passing INVALID as the value is ok as long as DiskEntry.Helper.initialize does not change the stats. Keep in mind that this entry may never make it into the region
               RegionEntry newRe = haveTombstone? tombstone : getEntryFactory().createEntry(owner, event.getKey(),
                   Token.INVALID);
               synchronized (newRe) {

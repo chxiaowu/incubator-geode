@@ -438,14 +438,7 @@ public interface DiskEntry extends RegionEntry {
         throw new IllegalArgumentException(LocalizedStrings.DiskEntry_DISK_REGION_IS_NULL.toLocalizedString());
       }
 
-      if (newValue == null || Token.isRemovedFromDisk(newValue)) {
-        // it is not in vm and it is not on disk
-        DiskId did = entry.getDiskId();
-        if (did != null) {
-          did.setKeyId(DiskRegion.INVALID_ID);
-        }
-      }
-      else if (newValue instanceof RecoveredEntry) {
+      if (newValue instanceof RecoveredEntry) {
         // Set the id directly, the value will also be set if RECOVER_VALUES
         RecoveredEntry re = (RecoveredEntry)newValue;
         DiskId did = entry.getDiskId();
@@ -455,15 +448,13 @@ public interface DiskEntry extends RegionEntry {
         did.setUserBits(re.getUserBits());
         did.setValueLength(re.getValueLength());
         if (re.getRecoveredKeyId() < 0) {
-          drv.incNumOverflowOnDisk(1L);
-          drv.incNumOverflowBytesOnDisk(did.getValueLength());
-          incrementBucketStats(r, 0/*InVM*/, 1/*OnDisk*/, did.getValueLength());
+          updateStats(drv, r, 0/*InVM*/, 1/*OnDisk*/, did.getValueLength());
         }
         else {
           entry.setValueWithContext(drv, entry.prepareValueForCache((RegionEntryContext) r,
               re.getValue(), false));
-          drv.incNumEntriesInVM(1L);
-          incrementBucketStats(r, 1/*InVM*/, 0/*OnDisk*/, 0);
+          // TODO: re.getValue() can be INVALID or TOMBSTONE. In those cases inVM should not be inced.
+          updateStats(drv, r, 1/*InVM*/, 0/*OnDisk*/, 0);
         }
       }
       else {
@@ -471,8 +462,10 @@ public interface DiskEntry extends RegionEntry {
         if (did != null) {
           did.setKeyId(DiskRegion.INVALID_ID);
         }
-        drv.incNumEntriesInVM(1L);
-        incrementBucketStats(r, 1/*InVM*/, 0/*OnDisk*/, 0);
+        // TODO: the value can be INVALID or TOMBSTONE in which case it should not be inVM
+        if (newValue != null && !Token.isRemovedFromDisk(newValue)) {
+          updateStats(drv, r, 1/*InVM*/, 0/*OnDisk*/, 0);
+        }
       }
     }
     
@@ -909,18 +902,14 @@ public interface DiskEntry extends RegionEntry {
           
           if (re.getRecoveredKeyId() < 0) {
             if(oldKeyId >= 0) {
-              dr.incNumEntriesInVM(-1L);
-              dr.incNumOverflowOnDisk(1L);
-              dr.incNumOverflowBytesOnDisk(did.getValueLength());
-              incrementBucketStats(region, -1/*InVM*/, 1/*OnDisk*/,
-                                   did.getValueLength());
+              // TODO: oldKeyId == 0 is the ILLEGAL id
+              // TODO: if oldValue is INVALID or TOMBSTONE then it was not inVM
+              updateStats(dr, region, -1/*InVM*/, 1/*OnDisk*/, did.getValueLength());
             }
           } else {
+            // TODO could be INVALID or a TOMBSTONE in which case should not be inVM or onDisk
             if(oldKeyId < 0) {
-              dr.incNumEntriesInVM(1L);
-              dr.incNumOverflowOnDisk(-1L);
-              dr.incNumOverflowBytesOnDisk(-oldValueLength);
-              incrementBucketStats(region, 1/*InVM*/, -1/*OnDisk*/, -oldValueLength);
+              updateStats(dr, region, 1/*InVM*/, -1/*OnDisk*/, -oldValueLength);
             }
           }
         }
@@ -991,28 +980,20 @@ public interface DiskEntry extends RegionEntry {
             // Note we now initialize entries removed and then set their
             // value once we find no existing entry.
             // So this is the normal path for a brand new entry.
-            dr.incNumEntriesInVM(1L);
-            incrementBucketStats(region, 1/*InVM*/, 0/*OnDisk*/, 0);
+            updateStats(dr, region, 1/*InVM*/, 0/*OnDisk*/, 0);
           }
           
           if(newValue == Token.TOMBSTONE) {
             if (oldValue == null) {
-              dr.incNumOverflowOnDisk(-1L);
-              dr.incNumOverflowBytesOnDisk(-oldValueLength);
-              incrementBucketStats(region, 0/*InVM*/, -1/*OnDisk*/, -oldValueLength);
+              updateStats(dr, region, 0/*InVM*/, -1/*OnDisk*/, -oldValueLength);
             } else {
-              dr.incNumEntriesInVM(-1L);
-              incrementBucketStats(region, -1/*InVM*/, 0/*OnDisk*/, 0);
+              updateStats(dr, region, -1/*InVM*/, 0/*OnDisk*/, 0);
             }
           } else {
             if (oldValue == null) {
-              dr.incNumEntriesInVM(1L);
-              dr.incNumOverflowOnDisk(-1L);
-              dr.incNumOverflowBytesOnDisk(-oldValueLength);
-              incrementBucketStats(region, 1/*InVM*/, -1/*OnDisk*/, -oldValueLength);
+              updateStats(dr, region, 1/*InVM*/, -1/*OnDisk*/, -oldValueLength);
             } else if(oldValue == Token.TOMBSTONE) {
-              dr.incNumEntriesInVM(1L);
-              incrementBucketStats(region, 1/*InVM*/, 0/*OnDisk*/, 0/*overflowBytesOnDisk*/);
+              updateStats(dr, region, 1/*InVM*/, 0/*OnDisk*/, 0/*overflowBytesOnDisk*/);
             }
           }
         }
@@ -1356,10 +1337,7 @@ public interface DiskEntry extends RegionEntry {
       // a regression with it. Reenable this post 6.5
       //Assert.assertTrue(entry._getValue() == null);
       entry.setValueWithContext((RegionEntryContext) region, preparedValue);
-      dr.incNumEntriesInVM(1L);
-      dr.incNumOverflowOnDisk(-1L);
-      dr.incNumOverflowBytesOnDisk(-bytesOnDisk);
-      incrementBucketStats(region, 1/*InVM*/, -1/*OnDisk*/, -bytesOnDisk);
+      updateStats(dr, region, 1/*InVM*/, -1/*OnDisk*/, -bytesOnDisk);
       return preparedValue;
     }
 
@@ -1382,17 +1360,31 @@ public interface DiskEntry extends RegionEntry {
       return valueBytes;
     }
 
-    public static void incrementBucketStats(Object owner,
-                                             int entriesInVmDelta,
-                                             int overflowOnDiskDelta,
-                                             int overflowBytesOnDiskDelta) {
-      if (owner instanceof BucketRegion) {
-        ((BucketRegion)owner).incNumEntriesInVM(entriesInVmDelta);
-        ((BucketRegion)owner).incNumOverflowOnDisk(overflowOnDiskDelta);
-        ((BucketRegion)owner).incNumOverflowBytesOnDisk(overflowBytesOnDiskDelta);
-      } else if (owner instanceof DiskRegionView) {
-        ((DiskRegionView)owner).incNumOverflowBytesOnDisk(overflowBytesOnDiskDelta);
+    public static void updateStats(DiskRegionView drv, Object owner,
+        int entriesInVmDelta,
+        int overflowOnDiskDelta,
+        int overflowBytesOnDiskDelta) {
+      if (entriesInVmDelta != 0) {
+        drv.incNumEntriesInVM(entriesInVmDelta);
       }
+      if (overflowOnDiskDelta != 0) {
+        drv.incNumOverflowOnDisk(overflowOnDiskDelta);
+      }
+      if (overflowBytesOnDiskDelta != 0) {
+        drv.incNumOverflowBytesOnDisk(overflowBytesOnDiskDelta);
+      }
+      if (owner instanceof BucketRegion) {
+        BucketRegion br = (BucketRegion) owner;
+        br.incNumEntriesInVM(entriesInVmDelta);
+        br.incNumOverflowOnDisk(overflowOnDiskDelta);
+        br.incNumOverflowBytesOnDisk(overflowBytesOnDiskDelta);
+      }
+      // Note: we used to call owner.incNumOverflowBytesOnDisk()
+      // if owner was a DiskRegionView.
+      // But since we also call drv.incNumOverflowBytesOnDisk()
+      // and since drv is == owner when owner is not a LocalRegion
+      // (see PlaceHolderDiskRegion.getDiskRegionView())
+      // this resulted in incNumOverflowBytesOnDisk being called twice.
     }
 
     /**
@@ -1410,6 +1402,8 @@ public interface DiskEntry extends RegionEntry {
     public static int overflowToDisk(DiskEntry entry, LocalRegion region, EnableLRU ccHelper) throws RegionClearedException {
       {
         Token entryVal = entry.getValueAsToken();
+        // entryVal == null means it has already overflowed
+        // TODO: the caller of this already checked for isInvalidOrRemoved so it is not possible for isRemovedFromDisk to be true
         if (entryVal == null || Token.isRemovedFromDisk(entryVal)) {
           // Note it could be removed token now because
           // freeAllEntriesOnDisk is not able to sync on entry
@@ -1432,7 +1426,7 @@ public interface DiskEntry extends RegionEntry {
       dr.acquireReadLock();
       try {
       synchronized (did) {
-        // check for a concurrent freeAllEntriesOnDisk
+        // check for a concurrent freeAllEntriesOnDisk which removes entries synced on did but not on entry
         if (entry.isRemovedFromDisk()) {
           return 0;
         }
@@ -1470,10 +1464,7 @@ public interface DiskEntry extends RegionEntry {
           valueLength = getValueLength(did);
         }
         if(dr.isSync() || movedValueToDisk) {
-          dr.incNumEntriesInVM(-1L);
-          dr.incNumOverflowOnDisk(1L);
-          dr.incNumOverflowBytesOnDisk(valueLength);
-          incrementBucketStats(region, -1/*InVM*/, 1/*OnDisk*/, valueLength);
+          updateStats(dr, region, -1/*InVM*/, 1/*OnDisk*/, valueLength);
         }
       }
       } finally {
@@ -1553,9 +1544,7 @@ public interface DiskEntry extends RegionEntry {
               if (Token.isRemovedFromDisk(entryVal)) {
                 if (region.isThisRegionBeingClosedOrDestroyed()) return;
                 // onDisk was already deced so just do the valueLength here
-                dr.incNumOverflowBytesOnDisk(-did.getValueLength());
-                incrementBucketStats(region, 0/*InVM*/, 0/*OnDisk*/,
-                                     -did.getValueLength());
+                updateStats(dr, region, 0/*InVM*/, 0/*OnDisk*/, -did.getValueLength());
                 dr.remove(region, entry, true, false);
                 if (dr.isBackup()) {
                   did.setKeyId(DiskRegion.INVALID_ID); // fix for bug 41340
@@ -1573,11 +1562,7 @@ public interface DiskEntry extends RegionEntry {
                     && ((LRUEntry)entry).testEvicted()) {
                   // Moved this here to fix bug 40116.
                   region.updateSizeOnEvict(entry.getKey(), entryValSize);
-                  dr.incNumEntriesInVM(-1);
-                  dr.incNumOverflowOnDisk(1L);
-                  dr.incNumOverflowBytesOnDisk(did.getValueLength());
-                  incrementBucketStats(region, -1/*InVM*/, 1/*OnDisk*/,
-                                       did.getValueLength());
+                  updateStats(dr, region, -1/*InVM*/, 1/*OnDisk*/, did.getValueLength());
                   entry.handleValueOverflow(region);
                   entry.setValueWithContext(region,null);
                 }
@@ -1653,8 +1638,8 @@ public interface DiskEntry extends RegionEntry {
 
         if (did == null || (dr.isBackup() && did.getKeyId()== DiskRegion.INVALID_ID)) {
           // Not on disk yet
-          dr.incNumEntriesInVM(-1L);
-          incrementBucketStats(region, -1/*InVM*/, 0/*OnDisk*/, 0);
+          // TODO: check if old value is TOMBSTONE or INVALID?
+          updateStats(dr, region, -1/*InVM*/, 0/*OnDisk*/, 0);
           dr.unscheduleAsyncWrite(did);
           return;
         } 
@@ -1688,13 +1673,11 @@ public interface DiskEntry extends RegionEntry {
           entry._removePhase1();
         }
         if (valueWasNull) {
-          dr.incNumOverflowOnDisk(-1L);
-          dr.incNumOverflowBytesOnDisk(-oldValueLength);
-          incrementBucketStats(region, 0/*InVM*/, -1/*OnDisk*/, -oldValueLength);
+          updateStats(dr, region, 0/*InVM*/, -1/*OnDisk*/, -oldValueLength);
         }
         else {
-          dr.incNumEntriesInVM(-1L);
-          incrementBucketStats(region, -1/*InVM*/, 0/*OnDisk*/, 0);
+          // TODO: if we dec inVM when INVALID/TOMBSTONE then no need to dec it here if oldValue is INVALID/TOMBSTONE
+          updateStats(dr, region, -1/*InVM*/, 0/*OnDisk*/, 0);
           if (!dr.isSync()) {
             // we are going to do an async remove of an entry that is not currently
             // overflowed to disk so we don't want to count its value length as being
