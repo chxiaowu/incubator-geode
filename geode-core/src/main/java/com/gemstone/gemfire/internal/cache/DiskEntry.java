@@ -1400,16 +1400,6 @@ public interface DiskEntry extends RegionEntry {
      * @throws RegionClearedException
      */
     public static int overflowToDisk(DiskEntry entry, LocalRegion region, EnableLRU ccHelper) throws RegionClearedException {
-      {
-        Token entryVal = entry.getValueAsToken();
-        // entryVal == null means it has already overflowed
-        // TODO: the caller of this already checked for isInvalidOrRemoved so it is not possible for isRemovedFromDisk to be true
-        if (entryVal == null || Token.isRemovedFromDisk(entryVal)) {
-          // Note it could be removed token now because
-          // freeAllEntriesOnDisk is not able to sync on entry
-          return 0;
-        }
-      }
       DiskRegion dr = region.getDiskRegion();
       final int oldSize = region.calculateRegionEntryValueSize(entry);;
       //Asif:Get diskID . If it is null, it implies it is
