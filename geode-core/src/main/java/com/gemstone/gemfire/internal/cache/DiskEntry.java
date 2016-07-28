@@ -1416,7 +1416,7 @@ public interface DiskEntry extends RegionEntry {
       dr.acquireReadLock();
       try {
       synchronized (did) {
-        // check for a concurrent freeAllEntriesOnDisk which removes entries synced on did but not on entry
+        // check for a concurrent freeAllEntriesOnDisk which syncs on DiskId but not on the entry
         if (entry.isRemovedFromDisk()) {
           return 0;
         }
@@ -1446,6 +1446,8 @@ public interface DiskEntry extends RegionEntry {
           entry.handleValueOverflow(region);
           entry.setValueWithContext(region,null);
           change = ((LRUClockNode)entry).updateEntrySize(ccHelper);
+          // the caller checked to make sure we had something to overflow
+          // so dec inVM and inc onDisk
           updateStats(dr, region, -1/*InVM*/, 1/*OnDisk*/, getValueLength(did));
         }
       }
