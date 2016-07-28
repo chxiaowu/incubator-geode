@@ -1444,7 +1444,6 @@ public interface DiskEntry extends RegionEntry {
             // and now we are faulting it out
           }
         }
-        boolean movedValueToDisk = false; // added for bug 41849
         
         // If async then if it does not need to be written (because it already was)
         // then treat it like the sync case. This fixes bug 41310
@@ -1456,15 +1455,8 @@ public interface DiskEntry extends RegionEntry {
           region.updateSizeOnEvict(entry.getKey(), oldSize);
           entry.handleValueOverflow(region);
           entry.setValueWithContext(region,null);
-          movedValueToDisk = true;
           change = ((LRUClockNode)entry).updateEntrySize(ccHelper);
-        }
-        int valueLength = 0;
-        if (movedValueToDisk) {
-          valueLength = getValueLength(did);
-        }
-        if(dr.isSync() || movedValueToDisk) {
-          updateStats(dr, region, -1/*InVM*/, 1/*OnDisk*/, valueLength);
+          updateStats(dr, region, -1/*InVM*/, 1/*OnDisk*/, getValueLength(did));
         }
       }
       } finally {
