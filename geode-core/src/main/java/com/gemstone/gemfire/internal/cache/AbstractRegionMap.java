@@ -574,8 +574,9 @@ public abstract class AbstractRegionMap implements RegionMap {
           if (newRe.isTombstone()) {
             VersionTag tag = newRe.getVersionStamp().asVersionTag();
             tombstones.put(tag, newRe);
+          } else {
+            _getOwner().updateSizeOnCreate(key, _getOwner().calculateRegionEntryValueSize(newRe));
           }
-          _getOwner().updateSizeOnCreate(key, _getOwner().calculateRegionEntryValueSize(newRe));
           incEntryCount(1);
           lruEntryUpdate(newRe);
         } finally {
@@ -587,20 +588,20 @@ public abstract class AbstractRegionMap implements RegionMap {
         lruUpdateCallback();
       }
     } else {
-      incEntryCount(size());
       for (Iterator<RegionEntry> iter = regionEntries().iterator(); iter.hasNext(); ) {
         RegionEntry re = iter.next();
         if (re.isTombstone()) {
           if (re.getVersionStamp() == null) { // bug #50992 - recovery from versioned to non-versioned
-            incEntryCount(-1);
             iter.remove();
             continue;
           } else {
             tombstones.put(re.getVersionStamp().asVersionTag(), re);
           }
+        } else {
+          _getOwner().updateSizeOnCreate(re.getKey(), _getOwner().calculateRegionEntryValueSize(re));
         }
-        _getOwner().updateSizeOnCreate(re.getKey(), _getOwner().calculateRegionEntryValueSize(re));
       }
+      incEntryCount(size());
       // Since lru was not being done during recovery call it now.
       lruUpdateCallback();
     }
