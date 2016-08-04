@@ -822,16 +822,12 @@ public interface DiskEntry extends RegionEntry {
      * @throws RegionClearedException
      */
     public static void update(DiskEntry entry, LocalRegion region, Object newValue, EntryEventImpl event) throws RegionClearedException {
-      DiskRegion dr = region.getDiskRegion();
       if (newValue == null) {
         throw new NullPointerException(LocalizedStrings.DiskEntry_ENTRYS_VALUE_SHOULD_NOT_BE_NULL.toLocalizedString());
       }
       
-      //If we have concurrency checks enabled for a persistent region, we need
-      //to add an entry to the async queue for every update to maintain the RVV
-      boolean maintainRVV = region.concurrencyChecksEnabled && dr.isBackup();
-      
       AsyncDiskEntry asyncDiskEntry = null;
+      DiskRegion dr = region.getDiskRegion();
       DiskId did = entry.getDiskId();
       Object syncObj = did;
       if (syncObj == null) {
@@ -842,7 +838,7 @@ public interface DiskEntry extends RegionEntry {
       }
       try {
         synchronized (syncObj) {
-          asyncDiskEntry = basicUpdate(entry, region, newValue, event, dr, maintainRVV, did);
+          asyncDiskEntry = basicUpdate(entry, region, newValue, event);
         }
       } finally {
         if (syncObj == did) {
@@ -855,8 +851,10 @@ public interface DiskEntry extends RegionEntry {
       }
     }
 
-    private static AsyncDiskEntry basicUpdate(DiskEntry entry, LocalRegion region, Object newValue, EntryEventImpl event, DiskRegion dr, boolean maintainRVV, DiskId did) throws RegionClearedException {
+    private static AsyncDiskEntry basicUpdate(DiskEntry entry, LocalRegion region, Object newValue, EntryEventImpl event) throws RegionClearedException {
       AsyncDiskEntry result = null;
+      DiskRegion dr = region.getDiskRegion();
+      DiskId did = entry.getDiskId();
       Token oldValue;
       int oldValueLength;
       oldValue = entry.getValueAsToken();
@@ -867,7 +865,7 @@ public interface DiskEntry extends RegionEntry {
         boolean caughtCacheClosed = false;
         try {
           if (!Token.isRemovedFromDisk(oldValue)) {
-            result = basicRemoveFromDisk(entry, region, false, dr, maintainRVV, did);
+            result = basicRemoveFromDisk(entry, region, false);
           }
         } catch (CacheClosedException e) {
           caughtCacheClosed = true;
@@ -957,10 +955,14 @@ public interface DiskEntry extends RegionEntry {
         if (dr.isBackup()) {
           dr.testIsRecoveredAndClear(did); // fixes bug 41409
           if (dr.isSync()) {
-            //In case of compression the value is being set first
             if (AbstractRegionEntry.isCompressible(dr, newValue)) {
+              //In case of compression the value is being set first
+              //so that writeToDisk and get it back from the entry
+              //decompressed if it does not have it already in the event.
+              // TODO: this may have introduced a bug with clear since
+              //       writeToDisk can throw RegionClearedException which
+              //       was supposed to stop us from changing entry.
               entry.setValueWithContext(region, newValue); // OFFHEAP newValue already prepared
-              
               // newValue is prepared and compressed. We can't write compressed values to disk.
               writeToDisk(entry, region, false, event);
             } else {
@@ -968,29 +970,24 @@ public interface DiskEntry extends RegionEntry {
               entry.setValueWithContext(region, newValue); // OFFHEAP newValue already prepared
             }
             
-          } else if (did.isPendingAsync() && !maintainRVV) {
-            entry.setValueWithContext(region, newValue); // OFFHEAP newValue already prepared
-            
-            // nothing needs to be done except
-            // fixing up LRU stats
-            // @todo fixup LRU stats if needed
-            // I'm not sure anything needs to be done here.
-            // If we have overflow and it decided to evict this entry
-            // how do we handle that case when we are async?
-            // Seems like the eviction code needs to leave the value
-            // in memory until the pendingAsync is done.
           } else {
-            //if the entry is not async, we need to schedule it
-            //for regions with concurrency checks enabled, we add an entry
-            //to the queue for every entry.
-            did.setPendingAsync(true);
-            VersionTag tag = null;
-            VersionStamp stamp = entry.getVersionStamp();
-            if(stamp != null) {
-              tag = stamp.asVersionTag();
+            //If we have concurrency checks enabled for a persistent region, we need
+            //to add an entry to the async queue for every update to maintain the RVV
+            boolean maintainRVV = region.concurrencyChecksEnabled;
+            
+            if (!did.isPendingAsync() || maintainRVV) {
+              //if the entry is not async, we need to schedule it
+              //for regions with concurrency checks enabled, we add an entry
+              //to the queue for every entry.
+              did.setPendingAsync(true);
+              VersionTag tag = null;
+              VersionStamp stamp = entry.getVersionStamp();
+              if(stamp != null) {
+                tag = stamp.asVersionTag();
+              }
+              result = new AsyncDiskEntry(region, entry, tag);
             }
-            result = new AsyncDiskEntry(region, entry, tag);
-            entry.setValueWithContext(region, newValue); 
+            entry.setValueWithContext(region, newValue); // OFFHEAP newValue already prepared
           }
         } else if (did != null) {
           entry.setValueWithContext(region, newValue); // OFFHEAP newValue already prepared
@@ -1611,11 +1608,6 @@ public interface DiskEntry extends RegionEntry {
      */
     public static void removeFromDisk(DiskEntry entry, LocalRegion region, boolean isClear) throws RegionClearedException {
       DiskRegion dr = region.getDiskRegion();
-      
-      //If we have concurrency checks enabled for a persistent region, we need
-      //to add an entry to the async queue for every update to maintain the RVV
-      boolean maintainRVV = region.concurrencyChecksEnabled && dr.isBackup();
-      
       DiskId did = entry.getDiskId();
       Object syncObj = did;
       if (did == null) {
@@ -1627,7 +1619,7 @@ public interface DiskEntry extends RegionEntry {
       }
       try {
         synchronized (syncObj) {
-          asyncDiskEntry = basicRemoveFromDisk(entry, region, isClear, dr, maintainRVV, did);
+          asyncDiskEntry = basicRemoveFromDisk(entry, region, isClear);
         }
       } finally {
         if (syncObj == did) {
@@ -1640,8 +1632,10 @@ public interface DiskEntry extends RegionEntry {
       }
     }
 
-    private static AsyncDiskEntry basicRemoveFromDisk(DiskEntry entry, LocalRegion region, boolean isClear, DiskRegion dr, boolean maintainRVV, DiskId did) throws RegionClearedException {
-      Object curValAsToken = entry.getValueAsToken();
+    private static AsyncDiskEntry basicRemoveFromDisk(DiskEntry entry, LocalRegion region, boolean isClear) throws RegionClearedException {
+      final DiskRegion dr = region.getDiskRegion();
+      final DiskId did = entry.getDiskId();
+      final Object curValAsToken = entry.getValueAsToken();
       if (did == null || (dr.isBackup() && did.getKeyId()== DiskRegion.INVALID_ID)) {
         // Not on disk yet
         if (!Token.isInvalidOrRemoved(curValAsToken)) {
@@ -1667,6 +1661,9 @@ public interface DiskEntry extends RegionEntry {
         //entry
         did.setPendingAsync(false);
       } else {
+        //If we have concurrency checks enabled for a persistent region, we need
+        //to add an entry to the async queue for every update to maintain the RVV
+        boolean maintainRVV = region.concurrencyChecksEnabled && dr.isBackup();
         if (!did.isPendingAsync() || maintainRVV) {
           did.setPendingAsync(true);
           VersionTag tag = null;
