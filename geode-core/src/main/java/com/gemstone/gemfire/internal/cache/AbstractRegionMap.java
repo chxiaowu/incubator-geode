@@ -837,6 +837,7 @@ public abstract class AbstractRegionMap implements RegionMap {
                       }
                     }
                     if (newValue == Token.TOMBSTONE) {
+                      owner.updateSizeOnRemove(key, oldSize);
                       if (owner.getServerProxy() == null &&
                           owner.getVersionVector().isTombstoneTooOld(entryVersion.getMemberID(), entryVersion.getRegionVersion())) {
                         // the received tombstone has already been reaped, so don't retain it
