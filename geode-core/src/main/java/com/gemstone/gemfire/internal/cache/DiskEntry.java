@@ -454,7 +454,7 @@ public interface DiskEntry extends RegionEntry {
         else {
           entry.setValueWithContext(drv, entry.prepareValueForCache((RegionEntryContext) r,
               re.getValue(), false));
-          if (!Tombstone.isInvalidOrTombstone(re.getValue())) {
+          if (!Tombstone.isInvalidOrRemoved(re.getValue())) {
             updateStats(drv, r, 1/*InVM*/, 0/*OnDisk*/, 0);
           }
         }
@@ -911,7 +911,7 @@ public interface DiskEntry extends RegionEntry {
           if (oldKeyId >= 0) { // the entry's old value is in vm
             // TODO: oldKeyId == 0 is the ILLEGAL id; what does that indicate?
             int inVM = -1;
-            if (Token.isInvalidOrTombstone(oldValueAsToken)) { // but tokens are never in vm
+            if (Token.isInvalidOrRemoved(oldValueAsToken)) { // but tokens are never in vm
               inVM = 0;
             }
             updateStats(dr, region, inVM, 1/*OnDisk*/, did.getValueLength());
@@ -922,16 +922,16 @@ public interface DiskEntry extends RegionEntry {
           }
         } else { // recovering an entry whose new value is in vm
           int inVM = 1;
-          if (Token.isInvalidOrTombstone(re.getValue())) { // but tokens never in vm
+          if (Token.isInvalidOrRemoved(re.getValue())) { // but tokens never in vm
             inVM = 0;
           }
           if(oldKeyId < 0) { // the entry's old value is on disk
             updateStats(dr, region, inVM, -1/*OnDisk*/, -oldValueLength);
           } else { // the entry's old value was in the vm
-            if (inVM == 1 && Token.isInvalidOrTombstone(oldValueAsToken)) {
+            if (inVM == 1 && Token.isInvalidOrRemoved(oldValueAsToken)) {
               // the old state was not in vm and not on disk. But now we are in vm.
               updateStats(dr, region, 1, 0, 0);
-            } else if (inVM == 0 && !Token.isInvalidOrTombstone(oldValueAsToken)) {
+            } else if (inVM == 0 && !Token.isInvalidOrRemoved(oldValueAsToken)) {
               // the old state was in vm and not on disk. But now we are not in vm.
               updateStats(dr, region, -1, 0, 0);
             }
@@ -1347,7 +1347,7 @@ public interface DiskEntry extends RegionEntry {
       // a regression with it. Reenable this post 6.5
       //Assert.assertTrue(entry._getValue() == null);
       entry.setValueWithContext((RegionEntryContext) region, preparedValue);
-      if (!Token.isInvalidOrTombstone(value)) {
+      if (!Token.isInvalidOrRemoved(value)) {
         updateStats(dr, region, 1/*InVM*/, -1/*OnDisk*/, -bytesOnDisk);
       }
       return preparedValue;
