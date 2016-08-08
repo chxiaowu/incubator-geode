@@ -698,16 +698,25 @@ public abstract class AbstractRegionMap implements RegionMap {
       }
       try {
         if (_isOwnerALocalRegion()) {
-          if (re.isTombstone()) {
+          boolean oldValueWasTombstone = re.isTombstone();
+          if (oldValueWasTombstone) {
             // when a tombstone is to be overwritten, unschedule it first
             _getOwner().unscheduleTombstone(re);
+            // unscheduleTombstone incs entryCount which is ok
+            // because we either set the value after this so that
+            // the entry exists or we call scheduleTombstone which
+            // will dec entryCount.
           }
           final int oldSize = _getOwner().calculateRegionEntryValueSize(re);
           re.setValue(_getOwner(), value); // OFFHEAP no need to call AbstractRegionMap.prepareValueForCache because setValue is overridden for disk and that code takes apart value (RecoveredEntry) and prepares its nested value for the cache
           if (re.isTombstone()) {
             _getOwner().scheduleTombstone(re, re.getVersionStamp().asVersionTag());
+            _getOwner().updateSizeOnRemove(key, oldSize);
+          } else if (oldValueWasTombstone) {
+            _getOwner().updateSizeOnCreate(key, _getOwner().calculateRegionEntryValueSize(re));
+          } else {
+            _getOwner().updateSizeOnPut(key, oldSize, _getOwner().calculateRegionEntryValueSize(re));
           }
-          _getOwner().updateSizeOnPut(key, oldSize, _getOwner().calculateRegionEntryValueSize(re));
         } else {
           DiskEntry.Helper.updateRecoveredEntry((PlaceHolderDiskRegion)_getOwnerObject(),
               (DiskEntry)re, value, (RegionEntryContext) _getOwnerObject());
