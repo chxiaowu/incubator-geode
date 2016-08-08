@@ -1045,7 +1045,8 @@ public interface DiskEntry extends RegionEntry {
       }
       DiskId did = entry.getDiskId();
       synchronized (did) {
-        boolean oldValueWasNull = entry.isValueNull();
+        Object oldValueAsToken = entry.getValueAsToken();
+        boolean oldValueWasNull = oldValueAsToken == null;
         int oldValueLength = did.getValueLength();
         // Now that oplog creates are immediately put in cache
         // a later oplog modify will get us here
@@ -1062,24 +1063,36 @@ public interface DiskEntry extends RegionEntry {
         if (newValue.getRecoveredKeyId() >= 0) {
           entry.setValueWithContext(context, entry.prepareValueForCache(drv, newValue.getValue(), 
               false));
+          int inVM = 1;
+          if (Token.isInvalidOrRemoved(newValue.getValue())) { // but tokens never in vm
+            inVM = 0;
+          }
+          if(oldValueWasNull) { // the entry's old value is on disk
+            updateStats(drv, null, inVM, -1/*OnDisk*/, -oldValueLength);
+          } else { // the entry's old value was in the vm
+            if (inVM == 1 && Token.isInvalidOrRemoved(oldValueAsToken)) {
+              // the old state was not in vm and not on disk. But now we are in vm.
+              updateStats(drv, null, 1, 0, 0);
+            } else if (inVM == 0 && !Token.isInvalidOrRemoved(oldValueAsToken)) {
+              // the old state was in vm and not on disk. But now we are not in vm.
+              updateStats(drv, null, -1, 0, 0);
+            }
+          }
         } else {
           if (!oldValueWasNull) {
             entry.handleValueOverflow(context);
             entry.setValueWithContext(context,null); // fixes bug 41119
           }
-        }
-        if (entry instanceof LRUEntry) {
-          LRUEntry le = (LRUEntry)entry;
-          assert !le.testEvicted();
-          // we don't allow eviction during recovery
-          if (oldValueWasNull) {
-            // Note we do not append this entry because that will be
-            // done by lruEntryUpdate
-            drv.incNumEntriesInVM(1L);
-            drv.incNumOverflowOnDisk(-1L);
-            drv.incNumOverflowBytesOnDisk(-oldValueLength);
-            //No need to call incrementBucketStats here because we don't have
-            //a real bucket region, this is during recovery from disk.
+          if (!oldValueWasNull) { // the entry's old value is in vm
+            int inVM = -1;
+            if (Token.isInvalidOrRemoved(oldValueAsToken)) { // but tokens are never in vm
+              inVM = 0;
+            }
+            updateStats(drv, null, inVM, 1/*OnDisk*/, did.getValueLength());
+          } else { // the entry's old value is also on disk
+            int valueLenDelta = -oldValueLength; // but it is no longer
+            valueLenDelta += did.getValueLength(); // new one is now on disk
+            updateStats(drv, null, 0, 0, valueLenDelta);
           }
         }
       }
