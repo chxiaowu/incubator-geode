@@ -662,12 +662,13 @@ public abstract class AbstractRegionMap implements RegionMap {
         } // synchronized
       }
       if (_isOwnerALocalRegion()) {
-        _getOwner().updateSizeOnCreate(key, _getOwner().calculateRegionEntryValueSize(newRe));
         if (newRe.isTombstone()) {
           // refresh the tombstone so it doesn't time out too soon
           _getOwner().scheduleTombstone(newRe, newRe.getVersionStamp().asVersionTag());
+        } else {
+          _getOwner().updateSizeOnCreate(key, _getOwner().calculateRegionEntryValueSize(newRe));
         }
-        
+        // incEntryCount is called for a tombstone because scheduleTombstone does entryCount--.
         incEntryCount(1); // we are creating an entry that was recovered from disk including tombstone
       }
       lruEntryUpdate(newRe);
